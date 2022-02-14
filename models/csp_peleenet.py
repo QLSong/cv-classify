@@ -4,7 +4,30 @@ import math
 import torch.nn.functional as F
 import time
 from timm.models.registry import register_model
+import numpy as np
 
+def rand_bbox(size, lam, scale=1):
+    """
+    get bounding box as token labeling (https://github.com/zihangJiang/TokenLabeling)
+    return: bounding box
+    """
+    W = size[1] // scale
+    H = size[2] // scale
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = np.int(W * cut_rat)
+    cut_h = np.int(H * cut_rat)
+    # print(size)
+    # exit()
+    # uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2
 
 class Conv_bn_relu(nn.Module):
     def __init__(self, inp, oup, kernel_size=3, stride=1, pad=1, use_relu=True, dilation=1):
@@ -102,7 +125,7 @@ class CSPTransitionBlock(nn.Module):
 
 class CSPPeleeNet(nn.Module):
     def __init__(self, num_classes=1000, num_init_features=32, growthRate=32, nDenseBlocks=[3, 4, 8, 6],
-                 bottleneck_width=[1, 2, 4, 4], csp_p1_rate=None, **kwargs):
+                 bottleneck_width=[1, 2, 4, 4], csp_p1_rate=None, patch_size=4, pooling_scale=1, return_dense=True, mix_token=True, **kwargs):
         super(CSPPeleeNet, self).__init__()
                 
         self.csp_p1_rate = csp_p1_rate
@@ -112,6 +135,12 @@ class CSPPeleeNet(nn.Module):
         self.stages = nn.Sequential()
         self.num_classes = num_classes
         self.num_init_features = num_init_features
+        # self.return_dense = return_dense
+        # self.mix_token = mix_token
+        # self.pooling_scale = pooling_scale
+
+        # if mix_token:  # enable token mixing, see token labeling for details.
+        #     self.beta = 1.0
 
         inter_channel = list()
         total_filter = list()
@@ -213,6 +242,13 @@ class CSPPeleeNet(nn.Module):
         
         return nn.Sequential(*layers)
     
+    def forward_cls(self, x):
+        B, C, H, W = x.shape
+        cls_tokens = F.avg_pool2d(x, kernel_size=7).reshape(B, 1, C)
+        x = x.permute(0, 2, 3, 1).contiguous().reshape(B, -1, C)
+        x = torch.cat((cls_tokens, x), dim=1)
+        return x
+
     def forward(self, x):
         x = self.stages[0](x)
         
@@ -234,14 +270,36 @@ class CSPPeleeNet(nn.Module):
         stage3_csp_part1, stage3_csp_part2 = stage3_csp_tb[:, : self.csp_p1_inp[3], :, :], stage3_csp_tb[:, self.csp_p1_inp[3]: , :, :]
         stage4_x = self.stages[4](stage3_csp_part2)
         stage4_tb = torch.cat([stage3_csp_part1, stage4_x], dim=1)
-        stage4_csp_tb = self.stage4_csp_tb(stage4_tb)
-        # return stage1_csp_tb, stage2_csp_tb, stage3_csp_tb, stage4_csp_tb
+        x = self.stage4_csp_tb(stage4_tb)
 
-        x = F.avg_pool2d(stage4_csp_tb, kernel_size=7)
+        x = F.avg_pool2d(x, kernel_size=7)
         x = x.view(x.size(0), -1)
         x = self.classifier(x)
         return x
 
+    def forward_featuremap(self, x):
+        x = self.stages[0](x)
+        
+        x_part1, x_part2 = x[:, : self.csp_p1_inp[0], :, :], x[:, self.csp_p1_inp[0]: , :, :]
+        stage1_x = self.stages[1](x_part2)
+        stage1_tb = torch.cat([x_part1, stage1_x], dim=1)
+        stage1_csp_tb = self.stage1_csp_tb(stage1_tb)
+        
+        stage1_csp_part1, stage1_csp_part2 = stage1_csp_tb[:, : self.csp_p1_inp[1], :, :], stage1_csp_tb[:, self.csp_p1_inp[1]: , :, :]
+        stage2_x = self.stages[2](stage1_csp_part2)
+        stage2_tb = torch.cat([stage1_csp_part1, stage2_x], dim=1)
+        stage2_csp_tb = self.stage2_csp_tb(stage2_tb)
+        
+        stage2_csp_part1, stage2_csp_part2 = stage2_csp_tb[:, : self.csp_p1_inp[2], :, :], stage2_csp_tb[:, self.csp_p1_inp[2]: , :, :]
+        stage3_x = self.stages[3](stage2_csp_part2)
+        stage3_tb = torch.cat([stage2_csp_part1, stage3_x], dim=1)
+        stage3_csp_tb = self.stage3_csp_tb(stage3_tb)
+        
+        stage3_csp_part1, stage3_csp_part2 = stage3_csp_tb[:, : self.csp_p1_inp[3], :, :], stage3_csp_tb[:, self.csp_p1_inp[3]: , :, :]
+        stage4_x = self.stages[4](stage3_csp_part2)
+        stage4_tb = torch.cat([stage3_csp_part1, stage4_x], dim=1)
+        stage4_csp_tb = self.stage4_csp_tb(stage4_tb)
+        return stage4_csp_tb
 
     def load_param(self, model_path):
         param_dict = torch.load(model_path, map_location='cpu')['state_dict']
@@ -277,7 +335,7 @@ class CSPPeleeNet(nn.Module):
 
 @register_model
 def csppeleenet(pretrained = False, **kwargs):
-    return CSPPeleeNet(num_classes=1000, csp_p1_rate=[0.25, 0.25, 0.25, 0.25]).cuda()
+    return CSPPeleeNet(num_classes=1000, csp_p1_rate=[0.25, 0.25, 0.25, 0.25])
 
 if __name__ == '__main__':
     model = CSPPeleeNet(num_classes=1000, csp_p1_rate=[0.25, 0.25, 0.25, 0.25]).cuda()

@@ -279,6 +279,8 @@ parser.add_argument('--cls-weight', type=float, default=1.0,
                     help='Cls token prediction loss multiplier (default: 1.0)')
 parser.add_argument('--ground-truth', action='store_true', default=False,
                     help='mix ground truth when use token labeling')
+parser.add_argument('--evaluation', type=str, default='', 
+                    help='evalution model root')
 
 # Finetune
 parser.add_argument('--finetune', default='', type=str, metavar='PATH',
@@ -359,7 +361,7 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint,
-        img_size=args.img_size)
+        )#img_size=args.img_size)
     if args.num_classes is None:
         assert hasattr(
             model, 'num_classes'
@@ -636,7 +638,14 @@ def main():
                                 max_history=args.checkpoint_hist)
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
             f.write(args_text)
-
+    if args.evaluation != '':
+        model.module.load_state_dict(torch.load(args.evaluation))
+        validate(model,
+            loader_eval,
+            validate_loss_fn,
+            args,
+            amp_autocast=amp_autocast)
+        return
     try:
         if args.finetune:
             validate(model,

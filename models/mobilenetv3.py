@@ -72,7 +72,7 @@ class SqueezeExcitation(nn.Module):
         scale = self.fc1(scale)
         scale = self.relu(scale)
         scale = self.fc2(scale)
-        return F.sigmoid(scale)
+        return F.hardsigmoid(scale, inplace=inplace)
 
     def forward(self, input: Tensor) -> Tensor:
         scale = self._scale(input, True)

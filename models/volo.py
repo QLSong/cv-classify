@@ -459,7 +459,7 @@ class VOLO(nn.Module):
                  stem_hidden_dim=64, embed_dims=None, num_heads=None, downsamples=None,
                  outlook_attention=None, mlp_ratios=None, qkv_bias=False, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=nn.LayerNorm,
-                 post_layers=None, return_mean=False, return_dense=False, mix_token=False,
+                 post_layers=None, return_mean=False, return_dense=True, mix_token=True,
                  pooling_scale=2, out_kernel=3, out_stride=2, out_padding=1):
 
         super().__init__()
